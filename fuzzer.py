@@ -8,6 +8,14 @@ import time
 import sys
 import random
 
+VERSION = "0.1"
+
+if __name__ == '__main__':
+    if len(sys.argv) == 2 and sys.argv[1] == '--version':
+        print(VERSION)
+        sys.exit(0)
+
+
 # random.seed(0)
 
 _init_time = time.time()
@@ -129,7 +137,7 @@ class _Program:
     @_timeit
     def _gcov(self):
         # gcov test
-        return subprocess.run(['gcov', self.pname + '.gcda'], capture_output = True, timeout=self.timeout()).stdout.decode()
+        return subprocess.run(['gcov', self.pname + '.gcda'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=self.timeout()).stdout.decode()
 
     # def _cov(self, output):
     #     output.split()
@@ -630,7 +638,7 @@ class Fuzzer:
         # self._program._compile()
         self._run_samples(self._total_samples, returncode_check=True)
         gcov = self._program._gcov() 
-        print(gcov)
+        # print(gcov)
         self._total_coverage = self._program._cov(gcov)
         self._logger.report_final()
         self._logger.report_time_log()
@@ -638,6 +646,7 @@ class Fuzzer:
             os.remove('__VERIFIER.gcda')
         if os.path.isfile(self._program.pname+'.gcda'):
             os.remove(self._program.pname+'.gcda')
+        print("coverage: " + str(self._total_coverage))
 
 
 # def bytes_to_int(bytes: np.ndarray) -> int:
@@ -1168,7 +1177,7 @@ def main_sv3():
         # fuzzer = Fuzzer(None, [0], None, None, program_path = program, max_sample_size = sample_size, input_size = input_size)
         fuzzer = Fuzzer(program_path = program, max_popsize = max_popsize, timeout=timeout)
         t = fuzzer.get_testsuite()
-        print('testsuite:', t)
+        # print('testsuite:', t)
         fuzzer.last_report()
         # fuzzer.gcov()
         # fuzzer.report()
@@ -1260,6 +1269,8 @@ def parse_argv_to_fuzzer_kwargs():
         for arg in sys.argv[2:]:
             if arg == '-help':
                 exit(example)
+            if arg == "-32" or arg == "-64":
+                continue
             if arg in commands:
                 current_command = commands[arg]
                 if current_command in fuzzer_kwargs:
@@ -1278,7 +1289,7 @@ def main():
 
     fuzzer = Fuzzer(**parse_argv_to_fuzzer_kwargs())
     t = fuzzer.get_testsuite()
-    print('testsuite:\n', t)
+    # print('testsuite:\n', t)
     fuzzer.last_report()
     # for program in programs:
         # fuzzer = Fuzzer(None, [0], None, None, program_path = program, max_sample_size = sample_size, input_size = input_size)
