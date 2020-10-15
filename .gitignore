@@ -1,0 +1,5 @@
+cma/__pycache__/
+cma/utilities/__pycache__/
+*.gcov
+*.gcno
+*.gcda
