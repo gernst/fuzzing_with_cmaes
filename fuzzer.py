@@ -6,6 +6,7 @@ import time
 import sys
 import random
 import argparse
+import datetime
 import csv
 
 _init_time = time.time()
@@ -205,8 +206,10 @@ class Program:
     def _compile_xml_dump(self):
         return subprocess.run(['gcc', self.path, self.verifier_xml_dump_path, '-o', self.output_dir + self.pname + '_xml_dump']).returncode
 
-    def do_xml_dump(self, input_bytes):
-        return subprocess.run(self.output_dir + self.pname + '_xml_dump', input=input_bytes, capture_output=True)
+    def xml_dump(self, input_bytes):
+        output = subprocess.run(self.output_dir + self.pname + '_xml_dump', input=input_bytes, capture_output=True)
+        output = output.stdout.decode()
+        return output
 
     def cal_input_size(self):
         output = subprocess.run(self.output_dir + self.pname + '_input_size', capture_output=True)
@@ -549,7 +552,7 @@ class Fuzzer:
     NO_INTERESTING_BRANCHES = 'the given program has no interesting branches'
     NO_INPUT = 'the given program takes no inputs'
 
-    def __init__(self, program_path, no_reset = False, live_logs = False, hot_restart = False, save_interesting = False, strategy = None, input_size = None,
+    def __init__(self, program_path, no_reset = False, live_logs = False, hot_restart = False, save_interesting = False, strategy = None, input_size = None, write_xml_tests = False,
     sample_type = DEFAULTS['sample_type'], timeout = DEFAULTS['timeout'],  hot_restart_threshold = DEFAULTS['hot_restart_threshold'], coverage_type = Program.DEFAULTS['coverage_type'],
     output_dir = Program.DEFAULT_DIRS['output'], log_dir = Program.DEFAULT_DIRS['log'], seed = CMA_ES.DEFAULTS['seed'], init_popsize = CMA_ES.DEFAULTS['init_popsize'],
     max_popsize = CMA_ES.DEFAULTS['max_popsize'], max_gens = CMA_ES.DEFAULTS['max_gens'], max_evaluations = CMA_ES.DEFAULTS['max_evaluations'], popsize_scale = CMA_ES.DEFAULTS['popsize_scale']):
@@ -564,6 +567,7 @@ class Fuzzer:
         self.save_interesting = save_interesting
         self.hot_restart_threshold = hot_restart_threshold
         self.sample_type = sample_type
+        self.write_xml_tests = write_xml_tests
 
         self.encode = self._select_encode(sample_type)
         self._program = Program(program_path, output_dir, log_dir, timeout, sample_type, coverage_type)
@@ -656,6 +660,19 @@ class Fuzzer:
         if returncode_check:
             self._check_verifier_error(returncode)
 
+    def _xml_dump_sample(self, index, sample):
+        if sample is None:
+            return
+
+        lines = self._program.xml_dump(self.encode(sample))
+
+        with open('{}/tests/{}.xml'.format(self._program.output_dir, index), 'wt+') as f:
+            f.write('<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n')
+            f.write('<!DOCTYPE testcase PUBLIC "+//IDN sosy-lab.org//DTD test-format testcase 1.1//EN" "https://sosy-lab.org/test-format/testcase-1.1.dtd">\n')
+            f.write(lines)
+            f.write('<testcase>\n')
+            f.write('</testcase>\n')
+
     def save_random_sample(self):
         lowerbound, upperbound = self.cma_es.get_bounds()
         sample = np.array([random.randrange(lowerbound,upperbound) for _ in range(self.cma_es.input_size)])
@@ -665,6 +682,10 @@ class Fuzzer:
         for sample in samples:
             self._run_sample(sample, returncode_check)
     
+    def _xml_dump_samples(self, samples):
+        for index, sample in enumerate(samples):
+            self._xml_dump_sample(index, sample)
+
     def penalize(self, input_vector):
         penalty = 0
         minimum, upperbound = self.cma_es.get_bounds()
@@ -873,8 +894,38 @@ class Fuzzer:
         print('total_eval:', self.cma_es.evaluations)
         print('seed:', self.cma_es.seed)
 
+    def maybe_write_xml_tests(self):
+        if not self.write_xml_tests:
+            return
+
+        os.system("mkdir -p {}/tests".format(self._program.output_dir))
+        with open("{}/tests/metadata.xml".format(self._program.output_dir), "wt+") as md:
+            md.write('<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n')
+            md.write('<!DOCTYPE test-metadata PUBLIC "+//IDN sosy-lab.org//DTD test-format test-metadata 1.1//EN" "https://sosy-lab.org/test-format/test-metadata-1.1.dtd">\n')
+            md.write('<test-metadata>\n')
+            md.write('<sourcecodelang>C</sourcecodelang>\n')
+            md.write('<producer>Gauss</producer>\n')
+            md.write('<specification>CHECK( LTL(G ! call(__VERIFIER_error())) )</specification>\n')
+            md.write('<programfile>{}</programfile>\n'.format(self._program.path))
+            res = subprocess.run(["sha256sum", self._program.path], capture_output=True)
+            out = res.stdout.decode('utf-8')
+            sha256sum = out[:64]
+            md.write('<programhash>{}</programhash>\n'.format(sha256sum))
+            md.write('<entryfunction>main</entryfunction>\n')
+            md.write('<architecture>32bit</architecture>\n')
+            md.write('<creationtime>{}</creationtime>\n'.format(datetime.datetime.now()))
+            md.write('</test-metadata>\n')
+
+        self._program._compile_xml_dump()
+
+        total_samples = self.get_total_samples()
+        if self.cma_es.input_size != 0:
+            self._xml_dump_samples(total_samples)
+
 def parse_argv_to_fuzzer_kwargs():
     arg_parser = argparse.ArgumentParser()
+    arg_parser.add_argument('-v', '--version', action = 'store_true', 
+        help = 'output tool version')
     arg_parser.add_argument('-od', '--output_dir', type = str, default =Program.DEFAULT_DIRS['output'], 
         help = 'directory for complied and executable programs')
     arg_parser.add_argument('-ld', '--log_dir', type = str, default =Program.DEFAULT_DIRS['log'],
@@ -909,10 +960,17 @@ def parse_argv_to_fuzzer_kwargs():
         help = 'write logs as txt file in log files whenever it changes')
     arg_parser.add_argument('program_path', nargs = '+' ,type = str,
         help = 'relative program path to test (only last argument will be regarded as program path)')
+    arg_parser.add_argument('-xml', '--write_xml_tests', action = 'store_true',
+        help = 'write Test-Comp test-suite')
 
     args= arg_parser.parse_known_args()[0]
     args.program_path = args.program_path[-1]
 
+    if args.version:
+        print("0.1-testcomp")
+        sys.exit(0)
+
+    del(args.version)
     return vars(args)
 
 def main():
@@ -920,6 +978,7 @@ def main():
     fuzzer = Fuzzer(**kwargs)
     t = fuzzer.generate_testsuite()
     fuzzer.last_report()
+    fuzzer.maybe_write_xml_tests()
 
 if __name__ == "__main__":
     main()
