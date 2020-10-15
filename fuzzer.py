@@ -152,13 +152,14 @@ class Program:
     COV_DIGITS = 2
 
     DEFAULT_DIRS = {'log' : 'logs/', 'output' : 'output/', 'verifiers': 'verifiers/'}
-    def __init__(self, path, output_dir, log_dir, timeout, sample_type, coverage_type, verifier_path = '/__VERIFIER.c', verifier_input_size_path = '/__VERIFIER_input_size.c'):
+    def __init__(self, path, output_dir, log_dir, timeout, sample_type, coverage_type, verifier_path = '/__VERIFIER.c', verifier_input_size_path = '/__VERIFIER_input_size.c', verifier_xml_dump_path = '/__VERIFIER_xml_dump.c'):
         self.path = path
         self.output_dir = output_dir
         self.log_dir = log_dir
         verifier_dir = 'verifiers_' + sample_type
         self.verifier_path = verifier_dir + verifier_path
         self.verifier_input_size_path = verifier_dir + verifier_input_size_path
+        self.verifier_xml_dump_path = verifier_dir + verifier_xml_dump_path
         self.codelines = {}
         self.pname = path[:-2].rsplit('/', 1)[-1]
         self._total_lines = 0
@@ -199,6 +200,13 @@ class Program:
     @_timeit
     def _compile_input_size(self):
         return subprocess.run(['gcc', self.path, self.verifier_input_size_path, '-o', self.output_dir + self.pname + '_input_size', '--coverage']).returncode
+
+    @_timeit
+    def _compile_xml_dump(self):
+        return subprocess.run(['gcc', self.path, self.verifier_xml_dump_path, '-o', self.output_dir + self.pname + '_xml_dump']).returncode
+
+    def do_xml_dump(self, input_bytes):
+        return subprocess.run(self.output_dir + self.pname + '_xml_dump', input=input_bytes, capture_output=True)
 
     def cal_input_size(self):
         output = subprocess.run(self.output_dir + self.pname + '_input_size', capture_output=True)
