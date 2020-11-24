@@ -47,7 +47,7 @@ class FuzzerLogger:
         self._csvname = self._log_path + fuzzer._program.pname + '_' + self._strategy_name +'.csv'
         
         initial_parameter_keys = ['no_reset', 'hot_restart', 'save_interesting', 'sample_type', 'coverage_type', 'input_size', 'max_popsize', 'popsize_scale', 'max_gens', 'max_eval', 'timeout', 'seed', 'strategy']
-        initial_parameter_values = [fuzzer.no_reset, fuzzer.hot_restart, fuzzer.save_interesting, fuzzer.sample_type, fuzzer._program.coverage_type, fuzzer.cma_es.input_size, fuzzer.cma_es._max_popsize, fuzzer.cma_es._popsize_scale, fuzzer.cma_es._max_gens, fuzzer.cma_es.max_evaluations, fuzzer._timeout, fuzzer.cma_es.seed, self._strategy_name]
+        initial_parameter_values = [fuzzer.no_reset, fuzzer.hot_restart, fuzzer.save_interesting, fuzzer.sample_type, fuzzer._program.coverage_type, fuzzer.cma_es.input_size, fuzzer.cma_es._max_popsize, fuzzer.cma_es._popsize_scale, fuzzer.cma_es._max_gens, fuzzer.cma_es.max_evaluations, fuzzer._timeout, fuzzer.seed, self._strategy_name]
 
         self._csv_lines.append(list(self._log.keys()))
 
@@ -113,7 +113,7 @@ class FuzzerLogger:
 
         self._log_message_lines.append('execution time for each method:')
         self._log_message_lines.append(''.join([self.format_pretty(key, max(len(key),6) + 2) for key, value in time_log.items()]))
-        self._log_message_lines.append(''.join([self.format_pretty(round(value,4), max(len(key),6) + 2) for key, value in time_log.items()]))
+        self._log_message_lines.append(''.join([self.format_pretty(round(value,2), max(len(key),6) + 2) for key, value in time_log.items()]))
         self._log_message_lines.append('\n-----------------------------------------------------------------------------------------------------------------------------------------------------------')
 
         if self._live:
@@ -121,7 +121,7 @@ class FuzzerLogger:
                 f.write('execution time for each method:\n')
                 f.writelines(self.format_pretty(key, max(len(key), 6) + 2) for key, value in time_log.items())
                 f.write('\n')
-                f.writelines(self.format_pretty(round(value,4), max(len(key), 6) + 2) for key, value in time_log.items())
+                f.writelines(self.format_pretty(round(value,2), max(len(key), 6) + 2) for key, value in time_log.items())
                 f.write('\n-----------------------------------------------------------------------------------------------------------------------------------------------------------\n')
 
     def write_logs(self):
@@ -145,15 +145,17 @@ class Program:
     ASSUME = 101
     OVER_MAX_INPUT_SIZE = 102
     INPUT_SIZE_EXECUTED = 103
+    OVER_TOTAL_INPUT_SIZE = 104
     SEGMENTATION_FAULT = -11
 
     MIN_INPUT_SIZE = 2
     MAX_INPUT_SIZE = 1000
 
     COV_DIGITS = 2
+    INPUT_TIMEOUT = 5
 
     DEFAULT_DIRS = {'log' : 'logs/', 'output' : 'output/', 'verifiers': 'verifiers/'}
-    def __init__(self, path, output_dir, log_dir, timeout, sample_type, coverage_type, verifier_path = '/__VERIFIER.c', verifier_input_size_path = '/__VERIFIER_input_size.c', verifier_xml_dump_path = '/__VERIFIER_xml_dump.c'):
+    def __init__(self, path, output_dir, log_dir, timeout, sample_type, coverage_type, seed, input_size, verifier_path = '/__VERIFIER.c', verifier_input_size_path = '/__VERIFIER_input_size.c', verifier_xml_dump_path = '/__VERIFIER_xml_dump.c'):
         self.path = path
         self.output_dir = output_dir
         self.log_dir = log_dir
@@ -169,6 +171,10 @@ class Program:
         self._init_dirs()
         self.coverage_type = coverage_type
         self.get_coverage_item_ids = self._select_coverage_item_type()
+        self.input_size = input_size
+        if input_size == None:
+            self._compile_input_size()
+            self.input_size = self._cal_input_size(seed)
 
     def _init_dirs(self):
         if self.output_dir[-1:] != '/':
@@ -200,7 +206,9 @@ class Program:
 
     @_timeit
     def _compile_input_size(self):
-        return subprocess.run(['gcc', self.path, self.verifier_input_size_path, '-o', self.output_dir + self.pname + '_input_size', '--coverage']).returncode
+        returncode = subprocess.run(['gcc', self.path, self.verifier_input_size_path, '-o', self.output_dir + self.pname + '_input_size', '--coverage']).returncode
+        if returncode == self.COMPILER_ERROR:
+            exit('ERROR: Compliler Error!')
 
     @_timeit
     def _compile_xml_dump(self):
@@ -211,19 +219,32 @@ class Program:
         output = output.stdout.decode()
         return output
 
-    def cal_input_size(self):
-        output = subprocess.run(self.output_dir + self.pname + '_input_size', capture_output=True)
-        returncode = output.returncode
-        if returncode != self.INPUT_SIZE_EXECUTED:
-            return 0, returncode
+    def _cal_input_size(self, seed):
+        input_size = -1
+        try:
+            output = subprocess.run(self.output_dir + self.pname + '_input_size', capture_output=True, input = seed.to_bytes(4,'little', signed=False), timeout=self.INPUT_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            returncode = None
+        else:
+            returncode = output.returncode
 
-        output = output.stdout.decode()
-        input_size = max(int(output[output.rfind('n') + 1:]), self.MIN_INPUT_SIZE)
-        return input_size, returncode
+        if returncode == self.SEGMENTATION_FAULT:
+            return 2
+
+        if returncode != self.INPUT_SIZE_EXECUTED:
+            return 0
+
+        try:
+            output = output.stdout.decode()
+            input_size = max(int(output[output.rfind('n') + 1:]), input_size)
+        except ValueError:
+            return self.MIN_INPUT_SIZE
+
+        return max(input_size, self.MIN_INPUT_SIZE)
 
     def cal_coverage_item_size(self):
         gcov = self._gcov('-b', '-c')
-        self._delete_gcda()
+        self.delete_gcda()
         gcov_lines = gcov.split('\n')
         if self.coverage_type == 'line':
             offset = 1
@@ -243,7 +264,7 @@ class Program:
             return int(text[text.rfind('f')+1:])
 
     @_timeit
-    def _delete_gcda(self):
+    def delete_gcda(self):
         if os.path.isfile(self.pname + '.gcda'):
             os.remove(self.pname+'.gcda')
         if os.path.isfile('__VERIFIER.gcda'):
@@ -251,7 +272,16 @@ class Program:
 
     @_timeit
     def _run(self, input_bytes):
-        return subprocess.run(self.output_dir + self.pname, input = input_bytes, timeout=self._cal_timeout()).returncode
+        output = subprocess.run(self.output_dir + self.pname, input = input_bytes, timeout=self._cal_timeout(), capture_output=True)
+        returncode = output.returncode
+        output = output.stdout.decode()
+        try:
+            input_size = int(output[output.rfind('n') + 1:])
+        except ValueError:
+            input_size = 0
+
+        self.input_size = min(max(self.input_size, input_size),self.MAX_INPUT_SIZE)
+        return returncode
 
     @_timeit
     def _gcov(self, *args):
@@ -295,19 +325,19 @@ class Program:
     # @_timeit
     def get_line_ids(self):
         gcov = self._gcov('-t')
-        self._delete_gcda()
+        self.delete_gcda()
         return self.cal_lines(gcov)
 
     # @_timeit
     def get_branche_ids(self):
         gcov = self._gcov('-b', '-c', '-t')
-        self._delete_gcda()
+        self.delete_gcda()
         return self.cal_branches(gcov)
 
     @_timeit
     def get_line_and_branch_coverages(self):
         gcov = self._gcov('-b', '-c')
-        self._delete_gcda()
+        self.delete_gcda()
         gcov_lines = gcov.split('\n')
         index = -1
         line_offset = 15
@@ -329,12 +359,11 @@ class Program:
 
 
 class CMA_ES:
-    DEFAULTS = {'seed' : None, 'init_popsize' : 10, 'max_popsize' : 1000, 'max_gens' : 1000, 'popsize_scale' : 10, 'max_evaluations' : 10 ** 5, 'x0' : [128], 'sigma0' : 0.3*256, 'bounds' : [0, 256]}
+    DEFAULTS = {'seed' : None, 'init_popsize' : 10, 'max_popsize' : 160, 'max_gens' : 1000, 'popsize_scale' : 4, 'max_evaluations' : np.inf, 'x0' : [128], 'sigma0' : 0.3*256, 'bounds' : [0, 256]}
 
     def __init__(self, seed, input_size, init_popsize, max_popsize, max_gens, popsize_scale, max_evaluations):
-        self.seed = self.init_seed(seed)
         self.input_size = input_size
-        self._options = dict(popsize = init_popsize, verb_disp = 0, seed = self.seed - 1, bounds = [self.DEFAULTS['bounds'][0], self.DEFAULTS['bounds'][1]])
+        self._options = dict(popsize = init_popsize, verb_disp = 0, seed = seed - 1, bounds = [self.DEFAULTS['bounds'][0], self.DEFAULTS['bounds'][1]])
         self._args = dict(x0 = self.DEFAULTS['x0'] * self.input_size, sigma0 = self.DEFAULTS['sigma0'])
         self._max_popsize = max_popsize
         self._max_gens = max_gens
@@ -345,19 +374,15 @@ class CMA_ES:
         self.evaluations = 0
         self.result = None
 
-    def init_seed(self, seed):
-        if seed is None:
-            return random.randint(10, 1000)
-        return seed
 
     def init_cmaes(self, mean = None, sigma = None, sigmas = None, fixed_variables = None):
-        self._options['seed'] += 1
+        self._options['seed'] = random.randint(10, 10000)
 
         if mean is None:
             self._args['x0'] = self.DEFAULTS['x0'] * self.input_size
             # lowerbound, upperbound = self.DEFAULTS['bounds']
             # random.seed(self._options['seed'])
-            # self._args['x0'] = [random.randrange(lowerbound, upperbound) for _ in range(self.input_size)]
+            # self._args['x0'] = [random.randint(lowerbound, upperbound) for _ in range(self.input_size)]
         else:
             self._args['x0'] = mean
         if sigma is None:
@@ -397,7 +422,8 @@ class CMA_ES:
     def update_evals(self):
         self.evaluations += 1
 
-    def update_result(self):
+    def update(self, input_size):
+        self.input_size = max(input_size, self.input_size)
         self.result = self._es.result
 
     def _reset_popsize(self):
@@ -480,8 +506,10 @@ class SampleCollector:
         if optimized or len(self.total_sample_holders) == 0:
             self.optimized_sample_holders.append(SampleHolder(sample, coverage_item_ids, stds = stds))
             if not self.save_interesting:
-                self.total_sample_holders.append(SampleHolder(sample, coverage_item_ids, stds = stds))
+                pre_total_score = len(self.total_coverage_item_ids)
                 self.total_coverage_item_ids.update(coverage_item_ids)
+                if pre_total_score < len(self.total_coverage_item_ids):
+                    self.total_sample_holders.append(SampleHolder(sample, coverage_item_ids, stds = stds))
         
         self.best_sample_holder.clear()
 
@@ -567,14 +595,22 @@ class Fuzzer:
         self.save_interesting = save_interesting
         self.hot_restart_threshold = hot_restart_threshold
         self.sample_type = sample_type
+
         self.write_xml_tests = write_xml_tests
 
+        self.seed = self.init_seed(seed)
+        random.seed(self.seed)
+
         self.encode = self._select_encode(sample_type)
-        self._program = Program(program_path, output_dir, log_dir, timeout, sample_type, coverage_type)
-        self._check_compile_error(self._program._compile_input_size())
-        self.cma_es = CMA_ES(seed, self._cal_input_size(input_size), init_popsize, max_popsize, max_gens, popsize_scale, max_evaluations)
+        self._program = Program(program_path, output_dir, log_dir, timeout, sample_type, coverage_type, self.seed, input_size)
+        self.cma_es = CMA_ES(self.seed, self._program.input_size, init_popsize, max_popsize, max_gens, popsize_scale, max_evaluations)
         self._samplecollector = SampleCollector(save_interesting, self._program.cal_coverage_item_size())
         self._logger = FuzzerLogger(strategy, live_logs).resister(self)
+
+    def init_seed(self, seed):
+        if seed is None:
+            return random.randint(10, 10000)
+        return seed
 
     def _select_encode(self, sample_type):
         if sample_type == 'real':
@@ -589,12 +625,6 @@ class Fuzzer:
         if returncode == Program.COMPILER_ERROR:
             exit('ERROR: Compliler Error!')
 
-    def _check_runtime_error(self, returncode):
-        if returncode == Program.OVER_MAX_INPUT_SIZE:
-            exit('ERROR: The input for "' + self._program.path + '" requires more than 1000 input size!')
-        elif returncode == Program.SEGMENTATION_FAULT:
-            exit('ERROR: Segmentation Fault for "' + self._program.path +'"!')
-
     def _check_verifier_error(self, returncode):
         if returncode in Fuzzer.VERIFIER_ERROS:
             state = Fuzzer.VERIFIER_ERROS[returncode]
@@ -602,14 +632,6 @@ class Fuzzer:
             state = 'UNKOWN: ' + str(returncode)
 
         self._statuses.append(state)
-
-    def _cal_input_size(self, input_size):
-        if input_size is None:
-            input_size, returncode = self._program.cal_input_size()
-            self._check_runtime_error(returncode)
-        else:
-            input_size = min(max(input_size, Program.MIN_INPUT_SIZE), Program.MAX_INPUT_SIZE)
-        return input_size
 
     def get_current_coverage(self):
         if self._samplecollector.coverage_item_size == 0:
@@ -675,7 +697,7 @@ class Fuzzer:
 
     def save_random_sample(self):
         lowerbound, upperbound = self.cma_es.get_bounds()
-        sample = np.array([random.randrange(lowerbound,upperbound) for _ in range(self.cma_es.input_size)])
+        sample = np.array([random.randint(lowerbound,upperbound) for _ in range(self.cma_es.input_size)])
         self._samplecollector.total_sample_holders.append(SampleHolder(sample))
 
     def _run_samples(self, samples, returncode_check = False):
@@ -736,8 +758,11 @@ class Fuzzer:
         finally:
             # for logs
             self.cma_es.update_evals()
-            if check and (prev_current_cov < self.get_current_coverage() or self.save_interesting and prev_total_cov < self.get_total_coverage()):
-                self._logger.report_changes('-', state = 'optimizing')
+            if prev_current_cov < self.get_current_coverage() or self.save_interesting and prev_total_cov < self.get_total_coverage():
+                if check:
+                    self._logger.report_changes('-', state = 'optimizing')
+                else:
+                    self._logger.report_changes('-', state = 'hot_restart')
 
             if self.cma_es.evaluations >= self.cma_es.max_evaluations:
                 raise StopIteration(self.OVER_MAX_EVAL)
@@ -769,7 +794,7 @@ class Fuzzer:
                 values = [self.check_optimized(sample, check) for sample in samples]
                 # extra_samples, extra_values = self.sample_until_interesting_found(number, score, check = check)
                 es.tell(samples, values)
-                es.update_result()
+                es.update(self._program.input_size)
 
                 # print('----------------------------------')
                 # print('iter:\n', es.result.iterations)
@@ -792,23 +817,26 @@ class Fuzzer:
         # stds_mean = sum(sample_holder.stds)/len(sample_holder.stds)
         lowerbound, upperbound = self.cma_es.get_bounds()
 
-        for i, std in enumerate(sample_holder.stds):
-            # if std >= upperbound or std > stds_mean:
-            if std >= upperbound or std > self.hot_restart_threshold:
-                mean.append(CMA_ES.DEFAULTS['x0'][0])
-                # mean.append(random.randrange(lowerbound, upperbound))
+        stds=sample_holder.stds
+        for i in range(self._program.input_size):
+            if i >= len(stds) or stds[i] >= upperbound or stds[i] > self.hot_restart_threshold:
                 sigmas.append(CMA_ES.DEFAULTS['sigma0'])
             else:
+                sigmas.append(stds[i])
+            if i >= len(stds):
+                # mean.append(random.randint(lowerbound, upperbound))
+                mean.append(CMA_ES.DEFAULTS['x0'][0])
+            else:
                 mean.append(sample_holder.sample[i])
-                sigmas.append(std)
 
         return mean, sigmas
 
     @_timeit
     def optimize_samples_with_hot_restart(self):
         number_of_hot_restarts = len(self._samplecollector.optimized_sample_holders)
+        pre_cov = self.get_current_coverage()
+        max_cov = pre_cov
         optimized = False
-        prev_seed = self.cma_es._options['seed']
         while number_of_hot_restarts > 0 and not self._stop():
             if not optimized:
                 mean, sigmas = self.extract_mean_sigmas_for_hot_restart(self._samplecollector.pop_first_optimum_holder())
@@ -821,8 +849,10 @@ class Fuzzer:
             if not optimized:
                 number_of_hot_restarts -= 1
 
-        # to observe the independent effect of hot restart
-        self.cma_es._options['seed'] = prev_seed
+            max_cov = max(max_cov, self.get_current_coverage())
+
+        if pre_cov < max_cov:
+            self.optimize_samples_with_hot_restart()
 
     # @_timeit
     def optimize_samples(self):
@@ -859,10 +889,10 @@ class Fuzzer:
             self._program._compile_program()
             if self.check_no_early_stop():
                 self.optimize_samples()
-        except:
-            self._interrupted = sys.exc_info()[0]
+        except (subprocess.TimeoutExpired,  KeyboardInterrupt, StopIteration) as e:
+            self._interrupted = e
         finally:
-            self._program._delete_gcda()
+            self._program.delete_gcda()
             self._program._timeout = None
 
         return self.parse_total_samples_to_input_vectors()
@@ -889,10 +919,10 @@ class Fuzzer:
         print('total sample len:', len(total_samples))
         print('total samples:', total_samples)
         print('total input vectors:', self.parse_total_samples_to_input_vectors())
-        print('line_coverage:', 0.01 * line)
-        print('branch_coverage:', 0.01 * branch)
+        print('line_coverage:', round(0.01 * line, 4))
+        print('branch_coverage:', round(0.01 * branch, 4))
         print('total_eval:', self.cma_es.evaluations)
-        print('seed:', self.cma_es.seed)
+        print('seed:', self.seed)
 
     def maybe_write_xml_tests(self):
         if not self.write_xml_tests:
@@ -947,7 +977,7 @@ def parse_argv_to_fuzzer_kwargs():
     arg_parser.add_argument('-hrt', '--hot_restart_threshold', type = int, default = Fuzzer.DEFAULTS['hot_restart_threshold'],
         help = 'threshold for the optimized sigma vector to decide whether their components, among mean vector components, are reset to default for the hot restart.')
     arg_parser.add_argument('-nr', '--no_reset', action = 'store_true',
-        help = 'deactivate reset after not optimized (this is for the most basic version)')
+        help = 'deactivate reset after not optimized (only for testing)')
     arg_parser.add_argument('-hr', '--hot_restart', action = 'store_true',
         help = 'activate hot restart while optimizing samples')
     arg_parser.add_argument('-si', '--save_interesting', action = 'store_true',

@@ -1,49 +1,44 @@
 #include <stdlib.h>
 #include <unistd.h>
-// #include <stdio.h>
+#include <stdio.h>
 // #include <assert.h>
 
 
 static int ERROR = 100;
 static int ASSUME = 101;
 static int OVER_MAX_INPUT_SIZE = 102;
+static int OVER_TOTAL_INPUT_SIZE = 104;
 
-// ssize_t _read(void *p, size_t n);
+static int MAX_INPUT_SIZE = 1000;
 
-unsigned int parse_signed(unsigned int x, int bits) {
-    return x / (1U << (32 - bits)) - (1U << (bits - 1));
+static int input_size;
+
+void _print_input_size(){
+    printf("n%d",input_size);
 }
 
-unsigned int parse_unsigned(unsigned int x, int bits) {
-    return x / (1U << (32 - bits));
-}
-
-unsigned int _read(size_t n, int is_signed) {
-    unsigned int x;
-    read(0, &x, sizeof(x));
-    if (is_signed) {
-        return parse_signed(x, 8*n);
-    } else {
-        return parse_unsigned(x, 8*n);
-    }   
-}
-
-unsigned long parse_signed_long(unsigned long x, long bits) {
-    return x / (1L << (64 - bits * 8)) - (1L << (bits * 8 - 1));
-}
-
-unsigned long parse_unsigned_long(unsigned long x, int bits) {
-    return x / (1L << (64 - bits * 8));
-}
-
-unsigned long _read2(size_t n, int is_signed) {
-    unsigned long x;
-    read(0, &x, sizeof(x));
-    if (is_signed) {
-        return parse_signed_long(x, 8*n);
-    } else {
-        return parse_unsigned_long(x, 8*n);
+unsigned int _read(size_t n, int signed_) {
+    if (input_size == 0) {
+        atexit(_print_input_size);
     }
+    input_size += 1;
+    unsigned int x;
+    if (!read(0, &x, sizeof(x))){
+        return 0;
+    }
+    return (x >> (32 - 8*n)) - signed_ * (1U<<(8*n-1));
+}
+
+unsigned long _read2(size_t n, int signed_) {
+    if (input_size == 0) {
+        atexit(_print_input_size);
+    }
+    input_size += 2;
+    unsigned long x;
+    if (!read(0, &x, sizeof(x))){
+        return 0;
+    }
+    return (x >> (64 - 8*n)) - signed_ * (1UL<<(8*n-1));
 }
 
 void __VERIFIER_error() {
