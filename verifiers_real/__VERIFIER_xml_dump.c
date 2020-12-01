@@ -63,10 +63,10 @@ _Bool __VERIFIER_nondet_bool() {
     // return x;
     char x = __VERIFIER_nondet_char();
     if (x < 0) {
-        printf("  <input type=\"bool\">%d</input>true</input size>\n");
+        printf("  <input type=\"bool\">true</input>\n");
         return 0;
     } else {
-        printf("  <input type=\"bool\">%d</input>false</input size>\n");
+        printf("  <input type=\"bool\">false</input>\n");
         return 1;
     }
 }

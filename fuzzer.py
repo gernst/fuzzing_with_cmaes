@@ -153,6 +153,7 @@ class Program:
 
     COV_DIGITS = 2
     INPUT_TIMEOUT = 5
+    RUN_TIMEOUT = 5
 
     DEFAULT_DIRS = {'log' : 'logs/', 'output' : 'output/', 'verifiers': 'verifiers/'}
     def __init__(self, path, output_dir, log_dir, timeout, sample_type, coverage_type, seed, input_size, verifier_path = '/__VERIFIER.c', verifier_input_size_path = '/__VERIFIER_input_size.c', verifier_xml_dump_path = '/__VERIFIER_xml_dump.c'):
@@ -196,9 +197,11 @@ class Program:
         exit('ERROR: No such coverage type is supported!')
 
     def _cal_timeout(self):
-        if self._timeout is None:
-            return None
-        return self._timeout - time.time() + _init_time
+        if self._timeout is not None:
+            remaining = self._timeout - time.time() + _init_time
+            return min(remaining, self.RUN_TIMEOUT)
+        else:
+            return self.RUN_TIMEOUT
 
     @_timeit
     def _compile_program(self):
@@ -691,8 +694,8 @@ class Fuzzer:
         with open('{}/tests/{}.xml'.format(self._program.output_dir, index), 'wt+') as f:
             f.write('<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n')
             f.write('<!DOCTYPE testcase PUBLIC "+//IDN sosy-lab.org//DTD test-format testcase 1.1//EN" "https://sosy-lab.org/test-format/testcase-1.1.dtd">\n')
-            f.write(lines)
             f.write('<testcase>\n')
+            f.write(lines)
             f.write('</testcase>\n')
 
     def save_random_sample(self):
@@ -934,15 +937,15 @@ class Fuzzer:
             md.write('<!DOCTYPE test-metadata PUBLIC "+//IDN sosy-lab.org//DTD test-format test-metadata 1.1//EN" "https://sosy-lab.org/test-format/test-metadata-1.1.dtd">\n')
             md.write('<test-metadata>\n')
             md.write('<sourcecodelang>C</sourcecodelang>\n')
-            md.write('<producer>Gauss</producer>\n')
-            md.write('<specification>CHECK( LTL(G ! call(__VERIFIER_error())) )</specification>\n')
+            md.write('<producer>CMA-ES Fuzz 0.2-testcomp</producer>\n')
+            md.write('<specification>COVER( init(main()), FQL(COVER EDGES(@DECISIONEDGE)) )</specification>\n')
             md.write('<programfile>{}</programfile>\n'.format(self._program.path))
             res = subprocess.run(["sha256sum", self._program.path], capture_output=True)
             out = res.stdout.decode('utf-8')
             sha256sum = out[:64]
             md.write('<programhash>{}</programhash>\n'.format(sha256sum))
             md.write('<entryfunction>main</entryfunction>\n')
-            md.write('<architecture>32bit</architecture>\n')
+            # md.write('<architecture>32bit</architecture>\n')
             md.write('<creationtime>{}</creationtime>\n'.format(datetime.datetime.now()))
             md.write('</test-metadata>\n')
 
@@ -988,17 +991,18 @@ def parse_argv_to_fuzzer_kwargs():
         help = 'strategy label for log and csv')
     arg_parser.add_argument('-ll', '--live_logs', action = 'store_true',
         help = 'write logs as txt file in log files whenever it changes')
-    arg_parser.add_argument('program_path', nargs = '+' ,type = str,
+    arg_parser.add_argument('program_path', nargs = '*' ,type = str,
         help = 'relative program path to test (only last argument will be regarded as program path)')
     arg_parser.add_argument('-xml', '--write_xml_tests', action = 'store_true',
         help = 'write Test-Comp test-suite')
 
     args= arg_parser.parse_known_args()[0]
-    args.program_path = args.program_path[-1]
 
     if args.version:
-        print("0.1-testcomp")
+        print("0.2-testcomp")
         sys.exit(0)
+
+    args.program_path = args.program_path[-1]
 
     del(args.version)
     return vars(args)
